@@ -1,4 +1,4 @@
-name: publish
+name: CI
 on: [push]
 
 jobs:
@@ -9,6 +9,9 @@ jobs:
       - uses: actions/setup-node@v1
         with:
           node-version: 14
+      - run: npm ci
+      - run: npm test
+      - run: npm run lint
       - uses: primer/publish@v2.0.0
         env:
           GITHUB_TOKEN: ${{ github.token }}
