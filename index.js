@@ -12,8 +12,7 @@ module.exports = (handlerOrOpts, opts) => {
   const handler = typeof handlerOrOpts === 'function' ? handlerOrOpts : null
   const options = (handler ? opts : handlerOrOpts) || {}
   const {
-    loggerOptions,
-    logger = defaultLogger(loggerOptions),
+    logger = console,
     clientOptions = { logger },
     client = defaultClient(clientOptions),
     isError = defaultIsError,
@@ -151,10 +150,6 @@ Object.assign(module.exports, {
 
 function defaultClient (options) {
   return Client.create(null, options)
-}
-
-function defaultLogger () {
-  return console
 }
 
 function defaultGetCacheKey (req, res) {
