@@ -44,7 +44,8 @@ module.exports = (handlerOrOpts, opts) => {
 
     if (queue.length) {
       logger.time('dequeue')
-      await Promise.all(queue).then(() => {
+      await Promise.all(queue).then(keys => {
+        logger.info('dequeued %d keys:', keys.length, keys)
         while (queue.length) queue.shift()
       })
       logger.timeEnd('dequeue')
@@ -83,7 +84,7 @@ module.exports = (handlerOrOpts, opts) => {
       res.set(X_CACHE_STATUS, 'MISS')
 
       const unhook = hook(res, 'send', (send, [body]) => {
-        if (body && !isError(req, res)) {
+        if (!isError(req, res, { body })) {
           const cacheOptions = getCacheOptions(req, res, { key })
           if (cacheOptions.expires) {
             // tell upstream proxies and clients not to cache this
@@ -92,16 +93,16 @@ module.exports = (handlerOrOpts, opts) => {
 
           logger.info(`caching "${key}" ...`, body.length, cacheOptions)
 
+          // res.send() must be synchronous, so we have to queue
+          // these tasks up and make sure that they've finished before we
+          // attempt to read the cache again
           queue.push(
             set(key, body, cacheOptions)
-              .then(() => logger.info(`SET "${key}"`))
-              .catch(error => logger.error(`SET "${key}" ERROR:`, error))
-          )
-
-          queue.push(
+              .then(() => key)
+              .catch(error => logger.error(`SET "${key}" ERROR:`, error)),
             set(headersKey, JSON.stringify(res.getHeaders()), cacheOptions)
-              .then(() => logger.info(`SET "${headersKey}"`))
-              .catch(error => logger.error(`SET "${headersKey}.headers" ERROR:`, error))
+              .then(() => headersKey)
+              .catch(error => logger.error(`SET "${headersKey}" ERROR:`, error))
           )
 
           unhook()
