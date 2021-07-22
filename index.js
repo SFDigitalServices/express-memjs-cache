@@ -1,6 +1,5 @@
 const { Client } = require('memjs')
 const parseCacheControl = require('parse-cache-control')
-const { promisify } = require('util')
 
 const CACHE_CONTROL = 'Cache-control'
 const NO_CACHE = 'max-age=0'
@@ -160,5 +159,15 @@ function hook (obj, method, fn) {
   }
   return function unhook () {
     obj[method] = original
+  }
+}
+
+function promisify (fn) {
+  return (...args) => {
+    return new Promise((resolve, reject) => {
+      fn(...args, (error, value) => {
+        error ? reject(error) : resolve(value)
+      })
+    })
   }
 }
