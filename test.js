@@ -1,8 +1,7 @@
 /* eslint-disable jest/expect-expect */
 const express = require('express')
 const supertest = require('supertest')
-const memjs = require('memjs')
-const { Client } = jest.requireActual('memjs')
+const { Client } = require('memjs')
 const createMiddleware = require('.')
 
 jest.mock('memjs')
@@ -28,18 +27,18 @@ class InMemoryClient {
   }
 }
 
-memjs.Client.create.mockImplementation(() => new InMemoryClient())
+Client.create.mockImplementation(() => new InMemoryClient())
 
 describe('cache client', () => {
   it('creates a memjs Client with the default options', () => {
     createMiddleware()
-    expect(memjs.Client.create).toBeCalled()
+    expect(Client.create).toBeCalled()
   })
 
   it('passes .clientOptions to the memjs.Client constructor', () => {
     const clientOptions = { foo: 'bar' }
     createMiddleware({ clientOptions, logger: nullLogger })
-    expect(memjs.Client.create).toBeCalledWith(null, clientOptions)
+    expect(Client.create).toBeCalledWith(null, clientOptions)
   })
 
   it('uses the provided .client', () => {
