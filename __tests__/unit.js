@@ -2,9 +2,13 @@
 const express = require('express')
 const supertest = require('supertest')
 const { Client } = require('memjs')
-const createMiddleware = require('.')
+const createMiddleware = require('..')
 
 jest.mock('memjs')
+
+const defaultCacheOptions = {
+  expires: createMiddleware.DEFAULT_EXPIRES
+}
 
 const nullLogger = {
   info: noop,
@@ -55,7 +59,7 @@ describe('cache client', () => {
         expect(client.get).toBeCalledTimes(1)
         expect(client.get).toBeCalledWith('/wut', expect.any(Function))
         expect(client.set).toBeCalledTimes(2)
-        expect(client.set).toBeCalledWith('/wut', 'ya', {}, expect.any(Function))
+        expect(client.set).toBeCalledWith('/wut', 'ya', defaultCacheOptions, expect.any(Function))
       })
   })
 })
@@ -98,7 +102,7 @@ describe('cache keys', () => {
       .expect('x-cache-status', 'MISS')
       .then(() => {
         expect(client.get).toBeCalledWith('publicCacheKey', expect.any(Function))
-        expect(client.set).toBeCalledWith('publicCacheKey', 'hi', {}, expect.any(Function))
+        expect(client.set).toBeCalledWith('publicCacheKey', 'hi', defaultCacheOptions, expect.any(Function))
       })
   })
 
@@ -121,7 +125,7 @@ describe('cache keys', () => {
       .expect('content-type', /lol-wut/)
       .then(() => {
         expect(client.get).toBeCalledWith('/?foo=bar', expect.any(Function))
-        expect(client.set).toBeCalledWith('/?foo=bar', 'hi', {}, expect.any(Function))
+        expect(client.set).toBeCalledWith('/?foo=bar', 'hi', defaultCacheOptions, expect.any(Function))
       })
 
     client.get.mockClear()
