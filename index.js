@@ -1,10 +1,12 @@
 const { Client } = require('memjs')
+const { promisify } = require('util')
 const parseCacheControl = require('parse-cache-control')
 
 const CACHE_CONTROL = 'Cache-control'
 const NO_CACHE = 'max-age=0'
 const X_CACHE_KEY = 'x-cache-key'
 const X_CACHE_STATUS = 'x-cache-status'
+const DEFAULT_EXPIRES = 60 * 60 * 24 * 30 // 30 days
 
 module.exports = (handlerOrOpts, opts) => {
   const handler = typeof handlerOrOpts === 'function' ? handlerOrOpts : null
@@ -37,28 +39,33 @@ module.exports = (handlerOrOpts, opts) => {
       return next()
     }
 
-    logger.time('dequeue')
-    await Promise.all(queue).then(() => {
-      while (queue.length) queue.shift()
-    })
-    logger.timeEnd('dequeue')
+    const headersKey = `${key}??headers`
+
+    if (queue.length) {
+      logger.time('dequeue')
+      await Promise.all(queue).then(() => {
+        while (queue.length) queue.shift()
+      })
+      logger.timeEnd('dequeue')
+    } else {
+      logger.debug('no tasks queued')
+    }
 
     logger.info(`get "${key}"`)
     res.set(X_CACHE_KEY, key)
 
-    const start = Date.now()
+    logger.time('get')
     const cached = await get(key).catch(error => {
       logger.error(`get "${key}" error:`, error)
     })
-
-    logger.info(`time "${key}": %sms`, Date.now() - start)
+    logger.timeEnd('get')
 
     if (cached) {
       logger.info('HIT', key)
       res.set(X_CACHE_STATUS, 'HIT')
 
-      const rawHeaders = await get(`${key}.headers`).catch(error => {
-        logger.error(`get "${key}.headers}" error:`, error)
+      const rawHeaders = await get(headersKey).catch(error => {
+        logger.error(`get "${headersKey}" error:`, error)
       })
       if (rawHeaders) {
         const headers = JSON.parse(rawHeaders.toString('utf8'))
@@ -73,6 +80,7 @@ module.exports = (handlerOrOpts, opts) => {
     } else {
       logger.info('MISS', key)
       res.set(X_CACHE_STATUS, 'MISS')
+
       const unhook = hook(res, 'send', (send, [body]) => {
         if (body && !isError(res)) {
           const cacheOptions = getCacheOptions(res)
@@ -84,17 +92,16 @@ module.exports = (handlerOrOpts, opts) => {
           logger.info(`caching "${key}" ...`, body.length, cacheOptions)
 
           queue.push(
-            set(`${key}.headers`, JSON.stringify(res.getHeaders()), cacheOptions)
-              .catch(error => {
-                logger.error(`... cache "${key}.headers" ERROR:`, error)
-              }),
             set(key, body, cacheOptions)
-              .catch(error => {
-                logger.error(`... cache "${key}" ERROR:`, error)
-              })
+              .then(() => logger.info(`SET "${key}"`))
+              .catch(error => logger.error(`SET "${key}" ERROR:`, error))
           )
 
-          logger.info(`cached "${key}"`)
+          queue.push(
+            set(headersKey, JSON.stringify(res.getHeaders()), cacheOptions)
+              .then(() => logger.info(`SET "${headersKey}"`))
+              .catch(error => logger.error(`SET "${headersKey}.headers" ERROR:`, error))
+          )
 
           unhook()
           send(body)
@@ -107,22 +114,24 @@ module.exports = (handlerOrOpts, opts) => {
   }
 
   function defaultGetCacheOptions (res) {
+    let expires = DEFAULT_EXPIRES
+
     // support locals.cacheMaxAge
     const { cacheMaxAge = options.cacheMaxAge } = res.locals
     if (!isNaN(cacheMaxAge)) {
-      return { expires: cacheMaxAge }
+      expires = cacheMaxAge
+    } else {
+      // support Cache-control: max-age=XXX
+      const header = res.get(CACHE_CONTROL)
+      if (header) {
+        const parsed = parseCacheControl(header)
+        const maxAge = parsed['max-age']
+        if (!isNaN(maxAge)) {
+          expires = maxAge
+        }
+      }
     }
-
-    // support Cache-control: max-age=XXX
-    const header = res.get(CACHE_CONTROL)
-    if (header) {
-      const parsed = parseCacheControl(header)
-      const maxAge = parsed['max-age']
-      return isNaN(maxAge)
-        ? {}
-        : { expires: maxAge }
-    }
-    return {}
+    return { expires }
   }
 }
 
@@ -130,7 +139,8 @@ Object.assign(module.exports, {
   CACHE_CONTROL,
   NO_CACHE,
   X_CACHE_KEY,
-  X_CACHE_STATUS
+  X_CACHE_STATUS,
+  DEFAULT_EXPIRES
 })
 
 function defaultClient (options) {
@@ -159,15 +169,5 @@ function hook (obj, method, fn) {
   }
   return function unhook () {
     obj[method] = original
-  }
-}
-
-function promisify (fn) {
-  return (...args) => {
-    return new Promise((resolve, reject) => {
-      fn(...args, (error, value) => {
-        error ? reject(error) : resolve(value)
-      })
-    })
   }
 }
