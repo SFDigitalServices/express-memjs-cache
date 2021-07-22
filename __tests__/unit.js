@@ -1,23 +1,16 @@
 /* eslint-disable jest/expect-expect */
 const express = require('express')
 const supertest = require('supertest')
+const nullLogger = require('null-logger')
 const { Client } = require('memjs')
 const createMiddleware = require('..')
+
+nullLogger.time = nullLogger.timeEnd = () => null
 
 jest.mock('memjs')
 
 const defaultCacheOptions = {
   expires: createMiddleware.DEFAULT_EXPIRES
-}
-
-const nullLogger = {
-  info: noop,
-  debug: noop,
-  log: noop,
-  warn: noop,
-  error: noop,
-  time: noop,
-  timeEnd: noop
 }
 
 class InMemoryClient {
@@ -142,11 +135,58 @@ describe('cache keys', () => {
   })
 })
 
-describe('error handling', () => {
-  const app = express()
-    .use(createMiddleware({ logger: nullLogger }))
+describe('cache options', () => {
+  it('calls getCacheOptions() with (req, res, { key })', () => {
+    let request, response
+    const getCacheOptions = jest.fn()
+    const app = express()
+      .use(createMiddleware({
+        logger: nullLogger,
+        getCacheOptions
+      }))
+      .get('/test', (req, res) => {
+        request = req
+        response = res
+        res.send('hi')
+      })
+    return supertest(app)
+      .get('/test')
+      .then(() => {
+        expect(getCacheOptions).toBeCalledWith(
+          request,
+          response,
+          { key: '/test' }
+        )
+      })
+  })
 
+  it('calls getCacheKey() with (req, res)', () => {
+    let request, response
+    const getCacheKey = jest.fn(() => 'wut')
+    const app = express()
+      .use(createMiddleware({
+        logger: nullLogger,
+        getCacheKey
+      }))
+      .get('/test', (req, res) => {
+        request = req
+        response = res
+        res.send('hi')
+      })
+    return supertest(app)
+      .get('/test')
+      .expect('x-cache-key', 'wut')
+      .then(() => {
+        expect(getCacheKey).toBeCalledWith(request, response)
+      })
+  })
+})
+
+describe('error handling', () => {
   describe('non-GET requests', () => {
+    const app = express()
+      .use(createMiddleware({ logger: nullLogger }))
+
     it('bypasses POST requests', () => {
       return supertest(app)
         .post('/foo')
@@ -171,7 +211,42 @@ describe('error handling', () => {
         .expect('x-cache-status', 'BYPASS')
     })
   })
-})
 
-function noop () {
-}
+  it('respects isError(req, res)', async () => {
+    const isError = jest.fn((req, res) => res.locals.error)
+    const app = express()
+      .use(createMiddleware({
+        logger: nullLogger,
+        isError
+      }))
+      .get('/good', (req, res) => res.send('hi'))
+      .get('/bad', (req, res) => {
+        res.locals.error = true
+        res.send('bye')
+      })
+
+    await supertest(app)
+      .get('/good')
+      .expect('hi')
+      .expect('x-cache-status', 'MISS')
+
+    // this should hit the second time
+    await supertest(app)
+      .get('/good')
+      .expect('hi')
+      .expect('x-cache-status', 'HIT')
+
+    await supertest(app)
+      .get('/bad')
+      .expect('bye')
+      .expect('x-cache-status', 'MISS')
+
+    // this should always miss
+    for (let i = 0; i < 10; i++) {
+      await supertest(app)
+        .get('/bad')
+        .expect('bye')
+        .expect('x-cache-status', 'MISS')
+    }
+  })
+})

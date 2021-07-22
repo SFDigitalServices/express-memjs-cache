@@ -18,6 +18,7 @@ module.exports = (handlerOrOpts, opts) => {
     client = defaultClient(clientOptions),
     isError = defaultIsError,
     getCacheKey = defaultGetCacheKey,
+    getCacheExpires = defaultGetCacheExpires,
     getCacheOptions = defaultGetCacheOptions
   } = options
 
@@ -82,8 +83,8 @@ module.exports = (handlerOrOpts, opts) => {
       res.set(X_CACHE_STATUS, 'MISS')
 
       const unhook = hook(res, 'send', (send, [body]) => {
-        if (body && !isError(res)) {
-          const cacheOptions = getCacheOptions(res)
+        if (body && !isError(req, res)) {
+          const cacheOptions = getCacheOptions(req, res, { key })
           if (cacheOptions.expires) {
             // tell upstream proxies and clients not to cache this
             res.set(CACHE_CONTROL, NO_CACHE)
@@ -113,13 +114,17 @@ module.exports = (handlerOrOpts, opts) => {
     }
   }
 
-  function defaultGetCacheOptions (res) {
-    let expires = DEFAULT_EXPIRES
+  function defaultGetCacheOptions (...args) {
+    return {
+      expires: getCacheExpires(...args) || DEFAULT_EXPIRES
+    }
+  }
 
+  function defaultGetCacheExpires (req, res) {
     // support locals.cacheMaxAge
     const { cacheMaxAge = options.cacheMaxAge } = res.locals
     if (!isNaN(cacheMaxAge)) {
-      expires = cacheMaxAge
+      return cacheMaxAge
     } else {
       // support Cache-control: max-age=XXX
       const header = res.get(CACHE_CONTROL)
@@ -127,11 +132,11 @@ module.exports = (handlerOrOpts, opts) => {
         const parsed = parseCacheControl(header)
         const maxAge = parsed['max-age']
         if (!isNaN(maxAge)) {
-          expires = maxAge
+          return maxAge
         }
       }
     }
-    return { expires }
+    return DEFAULT_EXPIRES
   }
 }
 
@@ -158,7 +163,7 @@ function defaultGetCacheKey (req, res) {
   )
 }
 
-function defaultIsError (res) {
+function defaultIsError (req, res) {
   return res.statusCode > 400
 }
 
