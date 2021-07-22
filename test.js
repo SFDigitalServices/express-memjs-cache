@@ -42,7 +42,7 @@ describe('cache client', () => {
       .then(() => {
         expect(client.get).toBeCalledTimes(1)
         expect(client.get).toBeCalledWith('/wut', expect.any(Function))
-        expect(client.set).toBeCalledTimes(1)
+        expect(client.set).toBeCalledTimes(2)
         expect(client.set).toBeCalledWith('/wut', 'ya', {}, expect.any(Function))
       })
   })
@@ -97,12 +97,16 @@ describe('cache keys', () => {
         client,
         logger: nullLogger
       }))
-      .get('/', (req, res) => res.send('hi'))
+      .get('/', (req, res) => {
+        res.set('content-type', 'text/plain+lol-wut')
+        res.send('hi')
+      })
 
     const test = supertest(app)
     await test.get('/?foo=bar')
       .expect('hi')
       .expect('x-cache-status', 'MISS')
+      .expect('content-type', /lol-wut/)
       .then(() => {
         expect(client.get).toBeCalledWith('/?foo=bar', expect.any(Function))
         expect(client.set).toBeCalledWith('/?foo=bar', 'hi', {}, expect.any(Function))
@@ -114,6 +118,7 @@ describe('cache keys', () => {
     await test.get('/?foo=bar')
       .expect('hi')
       .expect('x-cache-status', 'HIT')
+      .expect('content-type', /lol-wut/)
       .then(() => {
         expect(client.get).toBeCalledWith('/?foo=bar', expect.any(Function))
         expect(client.set).not.toBeCalled()

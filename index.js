@@ -1,5 +1,6 @@
 const { Client } = require('memjs')
 const parseCacheControl = require('parse-cache-control')
+const { promisify } = require('util')
 
 const CACHE_CONTROL = 'Cache-control'
 const NO_CACHE = 'max-age=0'
@@ -19,6 +20,10 @@ module.exports = (handlerOrOpts, opts) => {
     getCacheOptions = defaultGetCacheOptions
   } = options
 
+  const get = promisify(client.get.bind(client))
+  const set = promisify(client.set.bind(client))
+  const queue = []
+
   return async function cacheMiddleware (req, res, next) {
     if (req.method !== 'GET') {
       logger.info('no caching for %s method', req.method)
@@ -27,30 +32,42 @@ module.exports = (handlerOrOpts, opts) => {
     }
 
     const key = getCacheKey(req, res)
-    if (key === undefined) {
+    if (!key) {
       logger.info('no cache key found; skipping cache', req.originalUrl)
       res.set(X_CACHE_STATUS, 'BYPASS')
       return next()
     }
 
+    logger.time('dequeue')
+    await Promise.all(queue).then(() => {
+      while (queue.length) queue.shift()
+    })
+    logger.timeEnd('dequeue')
+
     logger.info(`get "${key}"`)
     res.set(X_CACHE_KEY, key)
 
     const start = Date.now()
-    const cached = await new Promise((resolve, reject) => {
-      client.get(key, (error, value) => {
-        error ? reject(error) : resolve(value)
-      })
+    const cached = await get(key).catch(error => {
+      logger.error(`get "${key}" error:`, error)
     })
-      .catch(error => {
-        logger.error(`get "${key}" error:`, error)
-      })
 
     logger.info(`time "${key}": %sms`, Date.now() - start)
 
     if (cached) {
-      logger.info('HIT', key, typeof value)
+      logger.info('HIT', key)
       res.set(X_CACHE_STATUS, 'HIT')
+
+      const rawHeaders = await get(`${key}.headers`).catch(error => {
+        logger.error(`get "${key}.headers}" error:`, error)
+      })
+      if (rawHeaders) {
+        const headers = JSON.parse(rawHeaders.toString('utf8'))
+        delete headers[X_CACHE_STATUS]
+        delete headers[CACHE_CONTROL]
+        res.set(headers)
+      }
+
       // FIXME: determine timeout from flags?
       res.set(CACHE_CONTROL, NO_CACHE)
       res.send(cached)
@@ -64,16 +81,24 @@ module.exports = (handlerOrOpts, opts) => {
             // tell upstream proxies and clients not to cache this
             res.set(CACHE_CONTROL, NO_CACHE)
           }
+
           logger.info(`caching "${key}" ...`, body.length, cacheOptions)
-          client.set(key, body, cacheOptions, error => {
-            if (error) {
-              logger.error(`... cache "${key}" ERROR:`, error)
-            } else {
-              logger.info(`cached "${key}"`)
-            }
-            unhook()
-            send(body)
-          })
+
+          queue.push(
+            set(`${key}.headers`, JSON.stringify(res.getHeaders()), cacheOptions)
+              .catch(error => {
+                logger.error(`... cache "${key}.headers" ERROR:`, error)
+              }),
+            set(key, body, cacheOptions)
+              .catch(error => {
+                logger.error(`... cache "${key}" ERROR:`, error)
+              })
+          )
+
+          logger.info(`cached "${key}"`)
+
+          unhook()
+          send(body)
         } else {
           send(body)
         }
