@@ -2,6 +2,7 @@
 const express = require('express')
 const supertest = require('supertest')
 const memjs = require('memjs')
+const { Client } = jest.requireActual('memjs')
 const createMiddleware = require('.')
 
 jest.mock('memjs')
@@ -16,17 +17,29 @@ const nullLogger = {
   timeEnd: noop
 }
 
+class InMemoryClient {
+  constructor () {
+    this.cache = new Map()
+    this.get = jest.fn((key, cb) => cb(null, this.cache.get(key)))
+    this.set = jest.fn((key, value, options, cb) => {
+      this.cache.set(key, value)
+      cb()
+    })
+  }
+}
+
+memjs.Client.create.mockImplementation(() => new InMemoryClient())
+
 describe('cache client', () => {
-  it('creates a memjs.Client with the default options', () => {
-    memjs.Client.mockClear()
+  it('creates a memjs Client with the default options', () => {
     createMiddleware()
-    expect(memjs.Client).toBeCalled()
+    expect(memjs.Client.create).toBeCalled()
   })
 
   it('passes .clientOptions to the memjs.Client constructor', () => {
     const clientOptions = { foo: 'bar' }
     createMiddleware({ clientOptions, logger: nullLogger })
-    expect(memjs.Client).toBeCalledWith(clientOptions)
+    expect(memjs.Client.create).toBeCalledWith(null, clientOptions)
   })
 
   it('uses the provided .client', () => {
@@ -156,17 +169,6 @@ describe('error handling', () => {
     })
   })
 })
-
-class InMemoryClient {
-  constructor () {
-    this.cache = new Map()
-    this.get = jest.fn((key, cb) => cb(null, this.cache.get(key)))
-    this.set = jest.fn((key, value, options, cb) => {
-      this.cache.set(key, value)
-      cb()
-    })
-  }
-}
 
 function noop () {
 }

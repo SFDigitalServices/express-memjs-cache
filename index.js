@@ -134,7 +134,7 @@ Object.assign(module.exports, {
 })
 
 function defaultClient (options) {
-  return new Client(options)
+  return Client.create(null, options)
 }
 
 function defaultLogger () {
