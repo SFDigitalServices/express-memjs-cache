@@ -1,23 +1,29 @@
 const { Client } = require('memjs')
+const { promisify } = require('util')
 const parseCacheControl = require('parse-cache-control')
 
 const CACHE_CONTROL = 'Cache-control'
 const NO_CACHE = 'max-age=0'
 const X_CACHE_KEY = 'x-cache-key'
 const X_CACHE_STATUS = 'x-cache-status'
+const DEFAULT_EXPIRES = 60 * 60 * 24 * 30 // 30 days
 
 module.exports = (handlerOrOpts, opts) => {
   const handler = typeof handlerOrOpts === 'function' ? handlerOrOpts : null
   const options = (handler ? opts : handlerOrOpts) || {}
   const {
-    loggerOptions,
-    logger = defaultLogger(loggerOptions),
+    logger = console,
     clientOptions = { logger },
     client = defaultClient(clientOptions),
     isError = defaultIsError,
     getCacheKey = defaultGetCacheKey,
+    getCacheExpires = defaultGetCacheExpires,
     getCacheOptions = defaultGetCacheOptions
   } = options
+
+  const get = promisify(client.get.bind(client))
+  const set = promisify(client.set.bind(client))
+  const queue = []
 
   return async function cacheMiddleware (req, res, next) {
     if (req.method !== 'GET') {
@@ -27,53 +33,79 @@ module.exports = (handlerOrOpts, opts) => {
     }
 
     const key = getCacheKey(req, res)
-    if (key === undefined) {
+    if (!key) {
       logger.info('no cache key found; skipping cache', req.originalUrl)
       res.set(X_CACHE_STATUS, 'BYPASS')
       return next()
     }
 
+    const headersKey = `${key}??headers`
+
+    if (queue.length) {
+      logger.time('dequeue')
+      await Promise.all(queue).then(keys => {
+        logger.info('dequeued %d keys:', keys.length, keys)
+        while (queue.length) queue.shift()
+      })
+      logger.timeEnd('dequeue')
+    } else {
+      logger.debug('no tasks queued')
+    }
+
     logger.info(`get "${key}"`)
     res.set(X_CACHE_KEY, key)
 
-    const start = Date.now()
-    const cached = await new Promise((resolve, reject) => {
-      client.get(key, (error, value) => {
-        error ? reject(error) : resolve(value)
-      })
+    logger.time('get')
+    const cached = await get(key).catch(error => {
+      logger.error(`get "${key}" error:`, error)
     })
-      .catch(error => {
-        logger.error(`get "${key}" error:`, error)
-      })
-
-    logger.info(`time "${key}": %sms`, Date.now() - start)
+    logger.timeEnd('get')
 
     if (cached) {
-      logger.info('HIT', key, typeof value)
+      logger.info('HIT', key)
       res.set(X_CACHE_STATUS, 'HIT')
+
+      const rawHeaders = await get(headersKey).catch(error => {
+        logger.error(`get "${headersKey}" error:`, error)
+      })
+      if (rawHeaders) {
+        const headers = JSON.parse(rawHeaders.toString('utf8'))
+        delete headers[X_CACHE_STATUS]
+        delete headers[CACHE_CONTROL]
+        res.set(headers)
+      }
+
       // FIXME: determine timeout from flags?
       res.set(CACHE_CONTROL, NO_CACHE)
       res.send(cached)
     } else {
       logger.info('MISS', key)
       res.set(X_CACHE_STATUS, 'MISS')
+
       const unhook = hook(res, 'send', (send, [body]) => {
-        if (body && !isError(res)) {
-          const cacheOptions = getCacheOptions(res)
+        if (!isError(req, res, { body })) {
+          const cacheOptions = getCacheOptions(req, res, { key })
           if (cacheOptions.expires) {
             // tell upstream proxies and clients not to cache this
             res.set(CACHE_CONTROL, NO_CACHE)
           }
+
           logger.info(`caching "${key}" ...`, body.length, cacheOptions)
-          client.set(key, body, cacheOptions, error => {
-            if (error) {
-              logger.error(`... cache "${key}" ERROR:`, error)
-            } else {
-              logger.info(`cached "${key}"`)
-            }
-            unhook()
-            send(body)
-          })
+
+          // res.send() must be synchronous, so we have to queue
+          // these tasks up and make sure that they've finished before we
+          // attempt to read the cache again
+          queue.push(
+            set(key, body, cacheOptions)
+              .then(() => key)
+              .catch(error => logger.error(`SET "${key}" ERROR:`, error)),
+            set(headersKey, JSON.stringify(res.getHeaders()), cacheOptions)
+              .then(() => headersKey)
+              .catch(error => logger.error(`SET "${headersKey}" ERROR:`, error))
+          )
+
+          unhook()
+          send(body)
         } else {
           send(body)
         }
@@ -82,23 +114,29 @@ module.exports = (handlerOrOpts, opts) => {
     }
   }
 
-  function defaultGetCacheOptions (res) {
+  function defaultGetCacheOptions (...args) {
+    return {
+      expires: getCacheExpires(...args) || DEFAULT_EXPIRES
+    }
+  }
+
+  function defaultGetCacheExpires (req, res) {
     // support locals.cacheMaxAge
     const { cacheMaxAge = options.cacheMaxAge } = res.locals
     if (!isNaN(cacheMaxAge)) {
-      return { expires: cacheMaxAge }
+      return cacheMaxAge
+    } else {
+      // support Cache-control: max-age=XXX
+      const header = res.get(CACHE_CONTROL)
+      if (header) {
+        const parsed = parseCacheControl(header)
+        const maxAge = parsed['max-age']
+        if (!isNaN(maxAge)) {
+          return maxAge
+        }
+      }
     }
-
-    // support Cache-control: max-age=XXX
-    const header = res.get(CACHE_CONTROL)
-    if (header) {
-      const parsed = parseCacheControl(header)
-      const maxAge = parsed['max-age']
-      return isNaN(maxAge)
-        ? {}
-        : { expires: maxAge }
-    }
-    return {}
+    return DEFAULT_EXPIRES
   }
 }
 
@@ -106,15 +144,12 @@ Object.assign(module.exports, {
   CACHE_CONTROL,
   NO_CACHE,
   X_CACHE_KEY,
-  X_CACHE_STATUS
+  X_CACHE_STATUS,
+  DEFAULT_EXPIRES
 })
 
 function defaultClient (options) {
-  return new Client(options)
-}
-
-function defaultLogger () {
-  return console
+  return Client.create(null, options)
 }
 
 function defaultGetCacheKey (req, res) {
@@ -124,7 +159,7 @@ function defaultGetCacheKey (req, res) {
   )
 }
 
-function defaultIsError (res) {
+function defaultIsError (req, res) {
   return res.statusCode > 400
 }
 
