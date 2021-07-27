@@ -1,6 +1,6 @@
 {
   "name": "express-memjs-cache",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Mem.js cache middleware for Express",
   "license": "MIT",
   "main": "index.js",
